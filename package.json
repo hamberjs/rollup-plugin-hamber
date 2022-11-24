@@ -1,0 +1,44 @@
+{
+  "name": "rollup-plugin-hamber",
+  "version": "5.0.1",
+  "description": "Compile Hamber components with Rollup",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "lint": "eslint index.js",
+    "prepublishOnly": "npm run lint"
+  },
+  "repository": "hamber/rollup-plugin-hamber",
+  "keywords": [
+    "hamber",
+    "rollup"
+  ],
+  "author": "NKDuy",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/hamber/rollup-plugin-hamber/issues"
+  },
+  "homepage": "https://github.com/hamber/rollup-plugin-hamber#README",
+  "devDependencies": {
+    "eslint": "^5.10.0",
+    "hamber": "^3.0.0-beta.21",
+    "locate-character": "^2.0.5",
+    "mocha": "^5.2.0",
+    "rollup": "^0.67.4",
+    "sander": "^0.6.0",
+    "source-map": "^0.6.1"
+  },
+  "dependencies": {
+    "require-relative": "^0.8.7",
+    "rollup-pluginutils": "^2.3.3",
+    "sourcemap-codec": "^1.4.4"
+  },
+  "peerDependencies": {
+    "hamber": "*",
+    "rollup": ">=0.60.0"
+  }
+}
