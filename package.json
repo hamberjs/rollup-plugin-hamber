@@ -1,6 +1,6 @@
 {
   "name": "rollup-plugin-hamber",
-  "version": "5.0.2",
+  "version": "5.0.3",
   "description": "Compile Hamber components with Rollup",
   "main": "index.js",
   "files": [
