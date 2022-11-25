@@ -27,12 +27,12 @@ export default {
   },
   plugins: [
     hamber({
-      // By default, all .html and .hamber files are compiled
-      extensions: [ '.my-custom-extension' ],
+      // By default, all .hamber and .html files are compiled
+      extensions: ['.my-custom-extension'],
 
       // You can restrict which files are compiled
       // using `include` and `exclude`
-      include: 'src/components/**/*.html',
+      include: 'src/components/**/*.hamber',
 
       // By default, the client-side compiler is used. You
       // can also use the server-side rendering compiler
@@ -78,8 +78,8 @@ If you're importing a component from your node_modules folder, and that componen
 {
   "name": "some-component",
 
-  // this means 'some-component' resolves to 'some-component/src/SomeComponent.html'
-  "hamber": "src/MyComponent.html"
+  // this means 'some-component' resolves to 'some-component/src/SomeComponent.hamber'
+  "hamber": "src/MyComponent.hamber"
 }
 ```
 
