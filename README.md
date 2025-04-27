@@ -39,7 +39,7 @@ export default {
       generate: 'ssr',
 
       // Optionally, preprocess components with hamber.preprocess:
-      // https://github.com/hamberjs/hamber#preprocessor-options
+      // https://hamberjs.web.app/docs#hamber_preprocess
       preprocess: {
         style: ({ content }) => {
           return transformStyles(content);
