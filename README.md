@@ -16,8 +16,8 @@ Note that we need to install Hamber as well as the plugin, as it's a 'peer depen
 
 ```js
 // rollup.config.js
-import * as fs from 'fs';
 import hamber from 'rollup-plugin-hamber';
+import resolve from '@rollup/plugin-node-resolve';
 
 export default {
   input: 'src/main.js',
@@ -27,7 +27,7 @@ export default {
   },
   plugins: [
     hamber({
-      // By default, all .hamber and .html files are compiled
+      // By default, all ".hamber" files are compiled
       extensions: ['.my-custom-extension'],
 
       // You can restrict which files are compiled
@@ -38,6 +38,10 @@ export default {
       // can also use the server-side rendering compiler
       generate: 'ssr',
 
+      // ensure that extra attributes are added to head
+      // elements for hydration (used with generate: 'ssr')
+      hydratable: true,
+
       // Optionally, preprocess components with hamber.preprocess:
       // https://hamberjs.web.app/docs#hamber_preprocess
       preprocess: {
@@ -46,33 +50,32 @@ export default {
         }
       },
 
-      // Emit CSS as "files" for other plugins to process
-      emitCss: true,
+      // Emit CSS as "files" for other plugins to process. default is true
+      emitCss: false,
 
-      // Extract CSS into a separate file (recommended).
-      // See note below
-      css: function (css) {
-        console.log(css.code); // the concatenated CSS
-        console.log(css.map); // a sourcemap
+      // You can optionally set 'customElement' to 'true' to compile
+      // your components to custom elements (aka web elements)
+      customElement: false,
 
-        // creates `main.css` and `main.css.map` — pass `false`
-        // as the second argument if you don't want the sourcemap
-        css.write('public/main.css');
-      },
-      
       // Warnings are normally passed straight to Rollup. You can
       // optionally handle them here, for example to squelch
       // warnings with a particular code
       onwarn: (warning, handler) => {
         // e.g. don't warn on <marquee> elements, cos they're cool
         if (warning.code === 'a11y-distracting-elements') return;
+
         // let Rollup handle all other warnings normally
         handler(warning);
       }
-    })
+    }),
+    // see NOTICE below
+    resolve({ browser: true }),
+    // ...
   ]
 }
 ```
+
+> **NOTICE:** You will need additional Rollup plugins. <br>Alone, this plugin translates Hamber components into CSS and JavaScript files. <br>You will need to include [`@rollup/plugin-node-resolve`](https://www.npmjs.com/package/@rollup/plugin-node-resolve) – and probably [`@rollup/plugin-commonjs`](https://www.npmjs.com/package/@rollup/plugin-commonjs) – in your Rollup config.
 
 
 ## Preprocessing and dependencies
@@ -97,17 +100,21 @@ If you're importing a component from your node_modules folder, and that componen
 
 Conversely, if you're *publishing* a component to npm, you should ship the uncompiled source (together with the compiled distributable, for people who aren't using Hamber elsewhere in their app) and include the `"hamber"` property in your package.json.
 
+If you are publishing a package containing multiple components, you can create an `index.js` file that re-exports all the components, like this:
+
+```js
+export { default as Component1 } from './Component1.hamber';
+export { default as Component2 } from './Component2.hamber';
+```
+
+and so on. Then, in `package.json`, set the `hamber` property to point to this `index.js` file.
+
 
 ## Extracting CSS
 
-If your Hamber components contain `<style>` tags, by default the compiler will add JavaScript that injects those styles into the page when the component is rendered. That's not ideal, because it adds weight to your JavaScript, prevents styles from being fetched in parallel with your code, and can even cause CSP violations.
+By default (when `emitCss: true`) the CSS styles will be emitted into a virtual file, allowing another Rollup plugin – for example, [`rollup-plugin-css-only`](https://www.npmjs.com/package/rollup-plugin-css-only), [`rollup-plugin-postcss`](https://www.npmjs.com/package/rollup-plugin-postcss), etc. – to take responsibility for the new stylesheet. In fact, emitting CSS files _requires_ that you use a Rollup plugin to handle the CSS. Otherwise, your build(s) will fail! This is because this plugin will add an `import` statement to import the emitted CSS file. It's not valid JS to import a CSS file into a JS file, but it allows the CSS to be linked to its respective JS file and is a common pattern that other Rollup CSS plugins know how to handle.
 
-A better option is to extract the CSS into a separate file. Using the `css` option as shown above would cause a `public/main.css` file to be generated each time the bundle is built (or rebuilt, if you're using rollup-watch), with the normal scoping rules applied.
-
-If you have other plugins processing your CSS (e.g. rollup-plugin-scss), and want your styles passed through to them to be bundled together, you can use `emitCss: true`.
-
-Alternatively, if you're handling styles in some other way and just want to prevent the CSS being added to your JavaScript bundle, use `css: false`.
-
+If you set `emitCss: false` and your Hamber components contain `<style>` tags, the compiler will add JavaScript that injects those styles into the page when the component is rendered. That's not the default, because it adds weight to your JavaScript, prevents styles from being fetched in parallel with your code, and can even cause CSP violations.
 
 ## License
 

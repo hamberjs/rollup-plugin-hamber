@@ -1,336 +1,137 @@
-const fs = require('fs');
 const path = require('path');
 const relative = require('require-relative');
-const { version } = require('hamber/package.json');
 const { createFilter } = require('rollup-pluginutils');
-const { encode, decode } = require('sourcemap-codec');
+const { compile, preprocess } = require('hamber/compiler');
 
-const major_version = +version[0];
+const PREFIX = '[rollup-plugin-hamber]';
+const pkg_export_errors = new Set();
 
-const { compile, preprocess } = major_version >= 3
-	? require('hamber/compiler.js')
-	: require('hamber');
+const plugin_options = new Set([
+	'include', 'exclude', 'extensions',
+	'preprocess', 'onwarn', 'emitCss',
+]);
 
-function sanitize(input) {
-	return path
-		.basename(input)
-		.replace(path.extname(input), '')
-		.replace(/[^a-zA-Z_$0-9]+/g, '_')
-		.replace(/^_/, '')
-		.replace(/_$/, '')
-		.replace(/^(\d)/, '_$1');
-}
+/**
+ * @param [options] {Partial<import('.').Options>}
+ * @returns {import('rollup').Plugin}
+ */
+module.exports = function (options = {}) {
+	const { compilerOptions={}, ...rest } = options;
+	const extensions = rest.extensions || ['.hamber'];
+	const filter = createFilter(rest.include, rest.exclude);
 
-function capitalize(str) {
-	return str[0].toUpperCase() + str.slice(1);
-}
+	compilerOptions.format = 'esm';
 
-const pluginOptions = {
-	include: true,
-	exclude: true,
-	extensions: true,
-	emitCss: true,
-	preprocess: true,
-
-	// legacy — we might want to remove/change these in a future version
-	onwarn: true,
-	shared: true
-};
-
-function tryRequire(id) {
-	try {
-		return require(id);
-	} catch (err) {
-		return null;
-	}
-}
-
-function tryResolve(pkg, importer) {
-	try {
-		return relative.resolve(pkg, importer);
-	} catch (err) {
-		if (err.code === 'MODULE_NOT_FOUND') return null;
-		throw err;
-	}
-}
-
-function exists(file) {
-	try {
-		fs.statSync(file);
-		return true;
-	} catch (err) {
-		if (err.code === 'ENOENT') return false;
-		throw err;
-	}
-}
-
-function mkdirp(dir) {
-	const parent = path.dirname(dir);
-	if (parent === dir) return;
-
-	mkdirp(parent);
-
-	try {
-		fs.mkdirSync(dir);
-	} catch (err) {
-		if (err.code !== 'EEXIST') throw err;
-	}
-}
-
-class CssWriter {
-	constructor (code, map, warn) {
-		this.code = code;
-		this.map = {
-			version: 3,
-			file: null,
-			sources: map.sources,
-			sourcesContent: map.sourcesContent,
-			names: [],
-			mappings: map.mappings
-		};
-		this.warn = warn;
+	for (let key in rest) {
+		if (plugin_options.has(key)) continue;
+		console.warn(`${PREFIX} Unknown "${key}" option. Please use "compilerOptions" for any Hamber compiler configuration.`);
 	}
 
-	write(dest, map) {
-		dest = path.resolve(dest);
-		mkdirp(path.dirname(dest));
+	// [filename]:[chunk]
+	const cache_emit = new Map;
+	const { onwarn, emitCss=true } = rest;
 
-		const basename = path.basename(dest);
-
-		if (map !== false) {
-			fs.writeFileSync(dest, `${this.code}\n/*# sourceMappingURL=${basename}.map */`);
-			fs.writeFileSync(`${dest}.map`, JSON.stringify({
-				version: 3,
-				file: basename,
-				sources: this.map.sources.map(source => path.relative(path.dirname(dest), source)),
-				sourcesContent: this.map.sourcesContent,
-				names: [],
-				mappings: this.map.mappings
-			}, null, '  '));
-		} else {
-			fs.writeFileSync(dest, this.code);
+	if (emitCss) {
+		if (compilerOptions.css) {
+			console.warn(`${PREFIX} Forcing \`"compilerOptions.css": false\` because "emitCss" was truthy.`);
 		}
-	}
-
-	toString() {
-		this.warn('[DEPRECATION] As of rollup-plugin-hamber@3, the argument to the `css` function is an object, not a string — use `css.write(file)`. Consult the documentation for more information: https://github.com/hamberjs/rollup-plugin-hamber');
-		return this.code;
-	}
-}
-
-module.exports = function hamber(options = {}) {
-	const filter = createFilter(options.include, options.exclude);
-
-	const extensions = options.extensions || ['.html', '.hamber'];
-
-	const fixed_options = {};
-
-	Object.keys(options).forEach(key => {
-		// add all options except include, exclude, extensions, and shared
-		if (pluginOptions[key]) return;
-		fixed_options[key] = options[key];
-	});
-
-	if (major_version >= 3) {
-		fixed_options.format = 'esm';
-		fixed_options.hamberPath = options.hamberPath || 'hamber';
-	} else {
-		fixed_options.format = 'es';
-		fixed_options.shared = require.resolve(options.shared || 'hamber/shared.js');
-	}
-
-	// handle CSS extraction
-	if ('css' in options) {
-		if (typeof options.css !== 'function' && typeof options.css !== 'boolean') {
-			throw new Error('options.css must be a boolean or a function');
-		}
-	}
-
-	let css = options.css && typeof options.css === 'function'
-		? options.css
-		: null;
-
-	const cssLookup = new Map();
-
-	if (css || options.emitCss) {
-		fixed_options.css = false;
+		compilerOptions.css = false;
 	}
 
 	return {
 		name: 'hamber',
 
-		load(id) {
-			if (!cssLookup.has(id)) return null;
-			return cssLookup.get(id);
-		},
-
+		/**
+		 * Resolve an import's full filepath.
+		 */
 		resolveId(importee, importer) {
-			if (cssLookup.has(importee)) { return importee; }
-			if (!importer || importee[0] === '.' || importee[0] === '\0' || path.isAbsolute(importee))
-				return null;
+			if (cache_emit.has(importee)) return importee;
+			if (!importer || importee[0] === '.' || importee[0] === '\0' || path.isAbsolute(importee)) return null;
 
 			// if this is a bare import, see if there's a valid pkg.hamber
 			const parts = importee.split('/');
-			let name = parts.shift();
-			if (name[0] === '@') name += `/${parts.shift()}`;
 
-			const resolved = tryResolve(
-				`${name}/package.json`,
-				path.dirname(importer)
-			);
-			if (!resolved) return null;
-			const pkg = tryRequire(resolved);
-			if (!pkg) return null;
+			let dir, pkg, name = parts.shift();
+			if (name[0] === '@') {
+				name += `/${parts.shift()}`;
+			}
 
-			const dir = path.dirname(resolved);
-
-			if (parts.length === 0) {
-				// use pkg.hamber
-				if (pkg.hamber) {
-					return path.resolve(dir, pkg.hamber);
+			try {
+				const file = `${name}/package.json`;
+				const resolved = relative.resolve(file, path.dirname(importer));
+				dir = path.dirname(resolved);
+				pkg = require(resolved);
+			} catch (err) {
+				if (err.code === 'MODULE_NOT_FOUND') return null;
+				if (err.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+					pkg_export_errors.add(name);
+					return null;
 				}
-			} else {
-				if (pkg['hamber.root']) {
-					// TODO remove this. it's weird and unnecessary
-					const sub = path.resolve(dir, pkg['hamber.root'], parts.join('/'));
-					if (exists(sub)) return sub;
-				}
+				throw err;
+			}
+
+			// use pkg.hamber
+			if (parts.length === 0 && pkg.hamber) {
+				return path.resolve(dir, pkg.hamber);
 			}
 		},
 
-		transform(code, id) {
+		/**
+		 * Returns CSS contents for a file, if ours
+		 */
+		load(id) {
+			return cache_emit.get(id) || null;
+		},
+
+		/**
+		 * Transforms a `.hamber` file into a `.js` file.
+		 * NOTE: If `emitCss`, append static `import` to virtual CSS file.
+		 */
+		async transform(code, id) {
 			if (!filter(id)) return null;
 
 			const extension = path.extname(id);
-
 			if (!~extensions.indexOf(extension)) return null;
 
 			const dependencies = [];
-			let preprocessPromise;
-			if (options.preprocess) {
-				if (major_version < 3) {
-					const preprocessOptions = {};
-					for (const key in options.preprocess) {
-						preprocessOptions[key] = (...args) => {
-							return Promise.resolve(options.preprocess[key](...args)).then(
-								(resp) => {
-									if (resp && resp.dependencies) {
-										dependencies.push(...resp.dependencies);
-									}
-									return resp;
-								}
-							);
-						};
-					}
-					preprocessPromise = preprocess(
-						code,
-						Object.assign(preprocessOptions, { filename: id })
-					).then((code) => code.toString());
-				} else {
-					preprocessPromise = preprocess(code, options.preprocess, {
-						filename: id,
-					}).then((processed) => {
-						if (processed.dependencies) {
-							dependencies.push(...processed.dependencies);
-						}
-						return processed.toString();
-					});
-				}
-			} else {
-				preprocessPromise = Promise.resolve(code);
+			const filename = path.relative(process.cwd(), id);
+
+			if (rest.preprocess) {
+				const processed = await preprocess(code, rest.preprocess, { filename });
+				if (processed.dependencies) dependencies.push(...processed.dependencies);
+				code = processed.code;
 			}
 
-			return preprocessPromise.then(code => {
-				let warnings = [];
+			const compiled = compile(code, { ...compilerOptions, filename });
 
-				const base_options = major_version < 3
-					? {
-						onwarn: warning => warnings.push(warning)
-					}
-					: {};
-
-				const compiled = compile(
-					code,
-					Object.assign(base_options, fixed_options, {
-						name: capitalize(sanitize(id)),
-						filename: id
-					})
-				);
-
-				if (major_version >= 3) warnings = compiled.warnings || compiled.stats.warnings;
-
-				warnings.forEach(warning => {
-					if ((options.css || !options.emitCss) && warning.code === 'css-unused-selector') return;
-					
-					if (options.onwarn) {
-						options.onwarn(warning, warning => this.warn(warning));
-					} else {
-						this.warn(warning);
-					}
-				});
-
-				if ((css || options.emitCss) && compiled.css.code) {
-					let fname = id.replace(extension, '.css');
-
-					if (options.emitCss) {
-						const source_map_comment = `/*# sourceMappingURL=${compiled.css.map.toUrl()} */`;
-						compiled.css.code += `\n${source_map_comment}`;
-
-						compiled.js.code += `\nimport ${JSON.stringify(fname)};\n`;
-					}
-
-					cssLookup.set(fname, compiled.css);
-				}
-
-				if (this.addWatchFile) {
-					dependencies.forEach(dependency => this.addWatchFile(dependency));
-				} else {
-					compiled.js.dependencies = dependencies;
-				}
-
-				return compiled.js;
+			(compiled.warnings || []).forEach(warning => {
+				if (!emitCss && warning.code === 'css-unused-selector') return;
+				if (onwarn) onwarn(warning, this.warn);
+				else this.warn(warning);
 			});
+
+			if (emitCss && compiled.css.code) {
+				const fname = id.replace(new RegExp(`\\${extension}$`), '.css');
+				compiled.js.code += `\nimport ${JSON.stringify(fname)};\n`;
+				cache_emit.set(fname, compiled.css);
+			}
+
+			if (this.addWatchFile) {
+				dependencies.forEach(this.addWatchFile);
+			} else {
+				compiled.js.dependencies = dependencies;
+			}
+
+			return compiled.js;
 		},
+
+		/**
+		 * All resolutions done; display warnings wrt `package.json` access.
+		 */
 		generateBundle() {
-			if (css) {
-				// write out CSS file. TODO would be nice if there was a
-				// a more idiomatic way to do this in Rollup
-				let result = '';
-
-				const mappings = [];
-				const sources = [];
-				const sourcesContent = [];
-
-				for (let chunk of cssLookup.values()) {
-					if (!chunk.code) continue;
-					result += chunk.code + '\n';
-
-					if (chunk.map) {
-						const i = sources.length;
-						sources.push(chunk.map.sources[0]);
-						sourcesContent.push(chunk.map.sourcesContent[0]);
-
-						const decoded = decode(chunk.map.mappings);
-
-						if (i > 0) {
-							decoded.forEach(line => {
-								line.forEach(segment => {
-									segment[1] = i;
-								});
-							});
-						}
-
-						mappings.push(...decoded);
-					}
-				}
-
-				const writer = new CssWriter(result, {
-					sources,
-					sourcesContent,
-					mappings: encode(mappings)
-				}, this.warn);
-
-				css(writer);
+			if (pkg_export_errors.size > 0) {
+				console.warn(`\n${PREFIX} The following packages did not export their \`package.json\` file so we could not check the "hamber" field. If you had difficulties importing hamber components from a package, then please contact the author and ask them to export the package.json file.\n`);
+				console.warn(Array.from(pkg_export_errors, s => `- ${s}`).join('\n') + '\n');
 			}
 		}
 	};
